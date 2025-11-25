@@ -1,0 +1,9 @@
+pdfplumber
+openai
+tiktoken
+neo4j
+tqdm
+spacy>=3.5.0
+# 可选：启用 transformer 支持以使用 'zh_core_web_trf'（如需精度更高的模型）
+spacy[transformers]>=3.5.0
+pytest>=7.0.0
