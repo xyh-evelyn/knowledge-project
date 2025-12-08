@@ -173,6 +173,14 @@ FEW_SHOT_EXAMPLE_OUTPUT = {
 }
 
 def call_llm(prompt_messages, model=None, max_retries=5, wait_base=1.0):
+    # """
+    # 调用大模型（LLM）获取实体提取结果
+    # :param prompt_messages: 传给大模型的消息列表（包含system prompt、示例、待处理文本）
+    # :param model: 指定使用的大模型（如gpt-4o、gpt-3.5-turbo等），默认从环境变量读取
+    # :param max_retries: 调用失败后的最大重试次数（默认5次）
+    # :param wait_base: 重试等待时间基数（指数退避策略，每次重试等待时间翻倍）
+    # :return: 大模型返回的原始文本响应
+    # """
     if OpenAI is None:
         raise RuntimeError('openai package not installed')
     
@@ -189,11 +197,11 @@ def call_llm(prompt_messages, model=None, max_retries=5, wait_base=1.0):
     while True:
         try:
             response = client.chat.completions.create(
-                model=model,
-                messages=prompt_messages,
-                temperature=0.1, # 降低随机性
-                max_tokens=2048,
-                response_format={"type": "json_object"} # 强制 JSON 模式（如果模型支持）
+                model=model,  # 指定模型
+                messages=prompt_messages,  # 消息列表
+                temperature=0.1,  # 低温度（0.1）：降低随机性，保证输出稳定、可重复
+                max_tokens=2048,  # 最大响应token数：足够容纳实体提取结果
+                response_format={"type": "json_object"}  # 强制JSON输出格式（需模型支持，如gpt-4o及以上）
             )
             return response.choices[0].message.content
         except Exception as e:
@@ -240,6 +248,12 @@ def build_messages(text):
     return messages
 
 def run(input_json, output_json, model=None):
+    # """
+    # 实体抽取核心流程：读取输入文本 → 逐段调用大模型 → 解析结果 → 保存输出
+    # :param input_json: 输入JSON文件路径（来自pdf_processing.py的processed_texts.json）
+    # :param output_json: 输出JSON文件路径（实体提取结果，默认entities_extracted.json）
+    # :param model: 指定大模型（可选，覆盖默认配置）
+    # """
     if not os.path.exists(input_json):
         print(f"错误：找不到输入文件 {input_json}")
         return

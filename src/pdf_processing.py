@@ -19,6 +19,36 @@ except Exception:
 
 
 def extract_text_from_pdf(path):
+    """
+PDF 或纯文本 -> 清洗文本 -> 分块（支持 token 估算）
+核心功能：将PDF或纯文本文件转换为结构化的文本块（JSON格式），便于后续实体抽取和关系抽取
+- 处理流程：读取文件 → 提取文本 → 清洗降噪 → 句子分割 → 按token限制分块 → 保存结果
+
+用法示例:
+    python src/pdf_processing.py --input plan.pdf --output processed_texts.json  # 处理PDF文件
+    python src/pdf_processing.py --text input/text1.txt --output processed_texts.json  # 处理纯文本文件
+
+依赖: pdfplumber (PDF文本提取), tiktoken (可选，用于精确token估算), tqdm (无显式使用，可能为依赖传递)
+"""
+import argparse  # 解析命令行参数
+import json  # 处理JSON格式输出
+import re  # 正则表达式，用于文本清洗和分割
+import os  # 文件路径处理
+import pdfplumber  # 读取PDF文件并提取文本（核心依赖）
+
+# 尝试导入tiktoken（OpenAI的token计算库），若导入失败则设为None（降级使用字符长度估算）
+try:
+    import tiktoken
+except Exception:
+    tiktoken = None
+
+
+def extract_text_from_pdf(path):
+    # """
+    # 从PDF文件中提取纯文本
+    # :param path: PDF文件路径
+    # :return: 提取后的完整纯文本（所有页面拼接，页面间用换行分隔）
+    # """
     pages = []
     with pdfplumber.open(path) as pdf:
         for p in pdf.pages:
@@ -28,6 +58,12 @@ def extract_text_from_pdf(path):
 
 
 def clean_text(text):
+    # """
+    # 文本清洗：去除无用信息，保留有效内容
+    # 清洗规则：空行、纯数字（可能是页码/序号）、页码标识（如"Page 1"）
+    # :param text: 原始文本（可能含噪声）
+    # :return: 清洗后的干净文本
+    # """
     lines = text.splitlines()
     clean_lines = []
     for ln in lines:
@@ -43,6 +79,10 @@ def clean_text(text):
 
 
 def split_sentences(text):
+    # 句子分割：将清洗后的文本按中文/英文句末标点分割为独立句子
+    # 支持的句末标点：中文（。！？）、英文（.!?）
+    # :param text: 清洗后的连贯文本
+    # :return: 分割后的句子列表（已去除空句子）
     pattern = r'(?<=[。！？!?\.!])\s*'
     parts = re.split(pattern, text)
     parts = [p.strip() for p in parts if p.strip()]
@@ -78,6 +118,13 @@ def chunk_sentences(sentences, max_tokens=512):
 
 
 def process_text_file(input_path, output_path, max_tokens=512):
+    # """
+    # 处理纯文本文件的完整流程：读取 → 清洗 → 分割 → 分块 → 保存
+    # :param input_path: 纯文本文件路径
+    # :param output_path: 输出JSON文件路径
+    # :param max_tokens: 每个文本块的最大token数
+    # :return: 结构化的文本块列表（与输出JSON内容一致）
+    # """
     with open(input_path, 'r', encoding='utf-8') as f:
         raw = f.read()
     cleaned = clean_text(raw)
@@ -92,6 +139,14 @@ def process_text_file(input_path, output_path, max_tokens=512):
 
 
 def process_pdf(input_path, output_path, max_tokens=512):
+    # """
+    # 处理PDF文件的完整流程：提取文本 → 清洗 → 分割 → 分块 → 保存
+    # 流程与纯文本处理一致，仅多一步PDF文本提取
+    # :param input_path: PDF文件路径
+    # :param output_path: 输出JSON文件路径
+    # :param max_tokens: 每个文本块的最大token数
+    # :return: 结构化的文本块列表（与输出JSON内容一致）
+    # """
     raw = extract_text_from_pdf(input_path)
     cleaned = clean_text(raw)
     sents = split_sentences(cleaned)
