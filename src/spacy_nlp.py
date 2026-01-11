@@ -1,10 +1,25 @@
-"""spaCy 中文句法分析工具（src 版本）"""
-from typing import Dict
+"""spaCy 中文句法分析工具（src 版本，已优化为仅加载一次模型）"""
+from typing import Dict, Optional
+
+# 全局缓存的 nlp 对象，避免对每个句子重复加载 spaCy 模型（极慢）
+_NLP_CACHE = None  # type: ignore[var-annotated]
+_NLP_MODEL_NAME: Optional[str] = None
 
 
-def analyze_sentence_syntax(text: str, model_name: str = None) -> Dict[str, object]:
-    if not isinstance(text, str) or not text.strip():
-        return {'tokens': [], 'dep': '', 'con_pos': '', 'dep_triples': []}
+def _get_nlp(model_name: Optional[str] = None):
+    """
+    返回已加载的 spaCy 中文模型（带全局缓存）。
+    第一次调用时加载模型，后续复用，大幅降低整体运行时间。
+    """
+    global _NLP_CACHE, _NLP_MODEL_NAME
+
+    if _NLP_CACHE is not None:
+        # 若指定了与已缓存不同的模型名称，则重新加载一次
+        if model_name and model_name != _NLP_MODEL_NAME:
+            _NLP_CACHE = None
+        else:
+            return _NLP_CACHE
+
     try:
         import spacy
     except Exception as e:
@@ -12,25 +27,45 @@ def analyze_sentence_syntax(text: str, model_name: str = None) -> Dict[str, obje
             "spaCy 未安装。请先运行: pip install -U spacy；\n"
             "然后下载中文模型，例如: python -m spacy download zh_core_web_sm"
         ) from e
+
     candidates = []
     if model_name:
         candidates.append(model_name)
+    # 默认优先尝试大模型，其次是小模型
     candidates.extend(["zh_core_web_trf", "zh_core_web_sm"])
-    nlp = None
+
     last_err = None
     for m in candidates:
         try:
-            nlp = spacy.load(m)
+            _NLP_CACHE = spacy.load(m)
+            _NLP_MODEL_NAME = m
             break
         except Exception as e:
             last_err = e
             continue
-    if nlp is None:
+
+    if _NLP_CACHE is None:
         raise RuntimeError(
             "找不到可用的 spaCy 中文模型。请安装并下载一个中文模型，例如:\n"
             "pip install -U spacy\n"
             "python -m spacy download zh_core_web_sm\n"
         ) from last_err
+
+    return _NLP_CACHE
+
+
+def analyze_sentence_syntax(text: str, model_name: str = None) -> Dict[str, object]:
+    """
+    对输入文本进行句法分析。
+
+    性能优化说明：
+    - 通过 `_get_nlp` 使用全局缓存的 spaCy 模型；
+    - 整个进程生命周期内模型只加载一次，大幅减少运行时间。
+    """
+    if not isinstance(text, str) or not text.strip():
+        return {'tokens': [], 'dep': '', 'con_pos': '', 'dep_triples': []}
+
+    nlp = _get_nlp(model_name)
     doc = nlp(text)
     tokens = []
     dep_parts = []

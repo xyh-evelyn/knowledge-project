@@ -1,9 +1,11 @@
-pdfplumber
-openai
-tiktoken
-neo4j
-tqdm
-spacy>=3.5.0
-# 可选：启用 transformer 支持以使用 'zh_core_web_trf'（如需精度更高的模型）
-spacy[transformers]>=3.5.0
-pytest>=7.0.0
+# 核心依赖
+openai>=1.0.0
+spacy>=3.4.0
+tqdm>=4.65.0
+neo4j>=5.0.0
+
+# 可选依赖（用于PDF处理）
+# PyPDF2>=3.0.0  # 如果需要PDF处理功能，取消注释
+
+# 开发依赖（可选）
+# pytest>=7.0.0  # 用于运行测试

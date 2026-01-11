@@ -1,335 +1,416 @@
-# """关系抽取模块（src 版本）"""
-# import os
-# import json
-# import time
-# import re
-# from tqdm import tqdm
-
-# try:
-#     from openai import OpenAI
-# except Exception:
-#     OpenAI = None
-
-# SYSTEM_PROMPT = (
-#     "你是一个城市规划专家。给定原文与已抽取实体，请判断哪些实体之间存在“规划活动”(Planned activity)关系，"
-#     "并按 [主语, 谓语, 宾语] 格式返回三元组列表。只输出 JSON 数组。"
-# )
-
-
-# def call_llm(messages, model=None, max_retries=5):
-#     if OpenAI is None:
-#         raise RuntimeError('openai package not installed')
-#     api_key = os.getenv('GRAPHRAG_CHAT_API_KEY') or os.getenv('OPENAI_API_KEY')
-#     if not api_key:
-#         raise RuntimeError('请设置环境变量 GRAPHRAG_CHAT_API_KEY 或 OPENAI_API_KEY')
-#     api_base = os.getenv('GRAPHRAG_API_BASE')
-#     model = model or os.getenv('GRAPHRAG_CHAT_MODEL') or os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
-#     client = OpenAI(api_key=api_key, base_url=api_base) if api_base else OpenAI(api_key=api_key)
-#     attempt = 0
-#     while True:
-#         try:
-#             response = client.chat.completions.create(
-#                 model=model,
-#                 messages=messages,
-#                 temperature=0,
-#                 max_tokens=1024,
-#             )
-#             return response.choices[0].message.content
-#         except Exception as e:
-#             attempt += 1
-#             if attempt >= max_retries:
-#                 raise
-#             time.sleep(1 * (2 ** (attempt - 1)))
-
-
-# def extract_json_array(s):
-#     s = s.strip()
-#     try:
-#         return json.loads(s)
-#     except Exception:
-#         pass
-#     m = re.search(r'\[\s*\[.*\]\s*\]', s, re.S)
-#     if m:
-#         try:
-#             return json.loads(m.group(0))
-#         except Exception:
-#             pass
-#     raise ValueError('无法解析 LLM 输出为三元组列表')
-
-
-# def build_messages(text, entities):
-#     ent_summary = json.dumps(entities, ensure_ascii=False)
-#     user = (
-#         f"原文：\n{text}\n\n已提取实体：{ent_summary}\n\n任务：请找出所有由“规划活动”(Planned activity)连接的主-谓-宾三元组。"
-#         "仅输出 JSON 数组，例如 [[\"政府\", \"加强\", \"基础设施建设\"]]。"
-#     )
-#     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
-
-
-# def run(input_json, output_json, model=None):
-#     with open(input_json, 'r', encoding='utf-8') as f:
-#         items = json.load(f)
-#     all_triplets = []
-#     for it in tqdm(items, desc='Relation Extraction'):
-#         text = it.get('text')
-#         entities = it.get('entities')
-#         messages = build_messages(text, entities)
-#         resp = call_llm(messages, model=model)
-#         try:
-#             triplets = extract_json_array(resp)
-#         except Exception as e:
-#             triplets = {"error": str(e), "raw": resp}
-#         all_triplets.append({"id": it.get('id'), "text": text, "triplets": triplets})
-#     with open(output_json, 'w', encoding='utf-8') as f:
-#         json.dump(all_triplets, f, ensure_ascii=False, indent=2)
-#     print('Saved triplets to', output_json)
-
-
-# if __name__ == '__main__':
-#     import argparse
-#     p = argparse.ArgumentParser()
-#     p.add_argument('--input', '-i', default='entities_extracted.json')
-#     p.add_argument('--output', '-o', default='triplets_final.json')
-#     p.add_argument('--model', '-m', default=None)
-#     args = p.parse_args()
-#     run(args.input, args.output, model=args.model)
-
 import os
 import json
 import time
 import argparse
 import re
-from tqdm import tqdm  # 进度条显示，提升用户体验
+from typing import Dict, List, Any, Optional
+from tqdm import tqdm
 
-# 尝试导入OpenAI客户端（用于调用大模型），若导入失败则设为None（后续会抛出异常）
+# 尝试导入OpenAI客户端
 try:
     from openai import OpenAI
-except Exception:
+except ImportError:
     OpenAI = None
 
+# 导入项目内模块
+try:
+    from .prompt_builder import PromptBuilder  # 假设PromptBuilder类存在或扩展
+    from .spacy_nlp import analyze_sentence_syntax  # 用于句法分析
+except ImportError:
+    # 当直接运行脚本时使用绝对导入
+    from prompt_builder import PromptBuilder
+    from spacy_nlp import analyze_sentence_syntax
+
 # --- 配置区 ---
-# 核心概念（Hub）：所有关系抽取都围绕该概念展开，确保图谱连通性
-CORE_CONCEPT = "本土设计"
-
-# 系统提示词（System Prompt）：定义大模型的角色、任务目标和核心规则
-SYSTEM_PROMPT = f"""
-你是一个城市规划专家，专注于构建关于【{CORE_CONCEPT}】的知识图谱。
-你的目标是解决“数据孤岛”问题，确保提取出的实体尽可能连接到核心网络中（核心策略：Hub-and-Spoke，以{CORE_CONCEPT}为中心枢纽）。
-
-任务规则：
-1. 分析原文和已提取的实体。
-2. 提取原文中明确的实体间关系（如：[政府, 推广, 绿色建筑]），生成三元组（Head实体, Relation关系, Tail实体）。
-3. 【关键步骤】：必须尝试寻找实体与核心概念【{CORE_CONCEPT}】之间的关系（消除孤岛的核心）。
-   - 如果原文提到某地正在实施规划，且上下文隐含这是为了{CORE_CONCEPT}，请生成 <地点, 实施, {CORE_CONCEPT}>。
-   - 如果某概念属于{CORE_CONCEPT}的一部分，请生成 <概念, 属于, {CORE_CONCEPT}>。
-4. 关系谓词不限于“规划活动”，可使用：包含、属于、位于、促进、阻碍、相关于、旨在实现（支持多样化关系表达）。
-5. 仅输出 JSON 数组格式（如 [[实体1, 关系, 实体2], [实体3, 关系, 核心概念]]），不添加额外文本。
+# 关系类型规范
+RELATION_SPEC = """
+可提取的关系类型（仅使用文本中隐含/明确的关系，优先选择以下标准化谓词）：
+1. 空间关系：位于、包含、邻近、属于（行政区/地块层级）、覆盖
+2. 功能关系：用作、具备、属于（用地功能）、配套
+3. 动作关系：规划、建设、改造、推广、提升、限制、实施、优先考虑
+4. 概念关系：属于、基于、包含、体现、应用
+5. 关联关系：相关于、影响、促进、阻碍（仅文本明确提及关联时使用）
 """
 
-def call_llm(messages, model=None, max_retries=5):
-    """
-    调用大模型（LLM）获取关系抽取结果
-    :param messages: 传给大模型的消息列表（包含system prompt、原文+实体信息）
-    :param model: 指定使用的大模型（如gpt-4o），默认从环境变量读取
-    :param max_retries: 调用失败后的最大重试次数（默认5次）
-    :return: 大模型返回的原始文本响应（预期为JSON数组格式）
-    """
-    # 检查OpenAI客户端是否导入成功
-    if OpenAI is None:
-        raise RuntimeError('未安装openai包，请执行 pip install openai 安装')
-    
-    # 获取API密钥：优先读取GRAPHRAG_CHAT_API_KEY，其次读取OPENAI_API_KEY（兼容不同环境）
-    api_key = os.getenv('GRAPHRAG_CHAT_API_KEY') or os.getenv('OPENAI_API_KEY')
-    if not api_key:
-        raise RuntimeError('请设置环境变量 GRAPHRAG_CHAT_API_KEY 或 OPENAI_API_KEY 以提供API密钥')
-    
-    # 获取API基础地址（用于自定义部署，如Azure OpenAI、本地部署等）
-    api_base = os.getenv('GRAPHRAG_API_BASE')
-    # 确定大模型：参数指定 > 环境变量GRAPHRAG_CHAT_MODEL > 环境变量OPENAI_MODEL > 默认gpt-4o
-    model = model or os.getenv('GRAPHRAG_CHAT_MODEL') or os.getenv('OPENAI_MODEL', 'gpt-4o')
-    
-    # 初始化OpenAI客户端（若有自定义API基础地址则传入）
-    client = OpenAI(api_key=api_key, base_url=api_base) if api_base else OpenAI(api_key=api_key)
-    
-    attempt = 0  # 记录重试次数
-    while True:
-        try:
-            # 调用大模型的聊天接口
-            response = client.chat.completions.create(
-                model=model,  # 指定模型
-                messages=messages,  # 消息列表
-                temperature=0.1,  # 低温度：降低随机性，保证关系抽取的准确性和一致性
-                max_tokens=1024,  # 最大响应token数：足够容纳多个三元组
-            )
-            # 返回大模型的响应内容（纯文本格式，后续需解析为JSON数组）
-            return response.choices[0].message.content
-        except Exception as e:
-            attempt += 1
-            # 重试次数达到上限，返回空数组字符串（避免程序崩溃）
-            if attempt >= max_retries:
-                return "[]"
-            # 指数退避策略：每次重试等待时间翻倍（1s → 2s → 4s...），避免频繁请求触发API限流
-            time.sleep(1 * (2 ** (attempt - 1)))
+# 系统提示词（扩展版：支持间接关联挖掘）
+SYSTEM_PROMPT = f"""
+你是一个城市规划领域的知识图谱关系抽取专家。
+你的任务是从文本和已提取的实体中，精准提取**文本明确提及或通过上下文隐含**的实体间三元组关系（Head实体, Relation关系, Tail实体）。
 
-def extract_json_array(s):
+{RELATION_SPEC}
+
+提取规则（严格遵守，否则会产生无效数据）：
+1. 仅提取文本中**明确出现/直接隐含**的关系，拒绝推测、联想或无中生有；
+2. 三元组的Head和Tail必须是已识别实体列表中的实体（或实体别名映射中的标准实体名），禁止添加未提及的实体；
+3. 关系谓词需简洁、准确（优先使用上述标准化谓词），避免模糊表述（如"有关""涉及"）；
+4. 同一组实体间的相同关系仅保留一次（去重）；
+5. 若文本中无任何实体间关系，返回空数组 []；
+6. 仅输出标准JSON数组格式（如 [[实体1, 关系, 实体2], [实体3, 关系, 实体4]]），无任何额外文本、注释或markdown格式；
+7. 拒绝为了"连通性"生成无文本依据的关系（如"实体X 相关于 实体Y"仅当文本明确提及关联时使用）；
+
+【扩展规则：挖掘文本内合法的间接关联】
+8. 允许提取文本内"通过上下文隐含的间接关联"（但必须有文本依据）：
+   - 示例1："A的B"（如"南沙区的核心区"）→ 提取 [A, 包含, B]（如[南沙区, 包含, 核心区]）
+   - 示例2："A对B做C，B属于D"（如"对核心区进行改造，核心区属于南沙区"）→ 可提取 [A, C, D]（如[改造, 涉及, 南沙区]）
+   - 规则：必须能在文本中找到明确的语言结构支持，不能凭空推断；
+   
+9. 允许提取"链式关联"（基于已有直接关联推断间接关联，但必须有文本支持）：
+   - 示例：文本中有 [A, 包含, B] 和 [B, 包含, C]，且文本中有"A的B的C"或类似表述 → 可提取 [A, 包含, C]
+   - 规则：链式关联必须能追溯到文本中的具体语言表达，禁止基于逻辑推理生成文本中没有依据的关联；
+   
+10. 【谨慎使用】共现实体的弱关联（仅当满足严格条件时）：
+    - 条件：同一语义完整文本段落中，实体对出现≥2次，且无其他直接关系，但共现且语义相关
+    - 处理：添加 [实体A, 共现于, 实体B] 关系（明确标注为"共现关联"）
+    - 限制：此类关系仅用于连通节点，需在三元组中标注 source_type="cooccurrence"，严格限制数量
+    - 注意：优先提取直接关系，只有在确实无直接关系时才考虑共现关系
+
+输出格式要求：
+- 每个三元组格式：[Head实体, 关系谓词, Tail实体]
+- 若使用了规则8-10挖掘的间接关联，建议在后续处理中记录source_type（直接/间接/链式/共现）
+- 所有关系必须能追溯到文本中的具体句子或上下文
+"""
+
+class RelationExtractor:
     """
-    从大模型的文本响应中提取并解析JSON数组（适配三元组格式）
-    处理场景：大模型可能返回带Markdown代码块、多余文本的响应，需清洗后解析
-    :param s: 大模型返回的原始文本响应
-    :return: 解析后的三元组列表（如[[实体1, 关系, 实体2], ...]，解析失败返回空列表）
+    关系抽取器类，基于LLM驱动的关系抽取
     """
-    # 去除文本首尾的空白字符（空格、换行、制表符等）
-    s = s.strip()
-    # 清理Markdown代码块标记（如```json、```），避免影响JSON解析
-    s = re.sub(r'^```json', '', s, flags=re.MULTILINE)  # 移除开头的```json
-    s = re.sub(r'^```', '', s, flags=re.MULTILINE)      # 移除开头的```（无json标识）
-    
-    try:
-        # 尝试直接解析清洗后的文本为JSON数组
-        return json.loads(s)
-    except Exception:
-        # 直接解析失败，尝试用正则提取多层数组（[[...]]格式，三元组标准格式）
-        pass
-    # 正则表达式：匹配最长的[[...]]格式（re.S表示.匹配换行符）
-    m = re.search(r'\[\s*\[.*\]\s*\]', s, re.S)
-    if m:
+    def __init__(self, llm_client: Any, prompt_builder: 'PromptBuilder'):
+        """
+        初始化关系抽取器
+        :param llm_client: LLM客户端实例（如OpenAI客户端）
+        :param prompt_builder: PromptBuilder实例，用于构建提示词
+        """
+        self.llm_client = llm_client
+        self.prompt_builder = prompt_builder
+
+    def extract_relations(self, text_id: str, source_text: str, ner_entities: Dict[str, List[str]]) -> Dict[str, Any]:
+        """
+        提取关系三元组
+        :param text_id: 文本唯一标识
+        :param source_text: 原始分块文本内容
+        :param ner_entities: NER实体字典，格式如{"Location": ["实体1"], ...}
+        :return: 符合规范的输出字典
+        """
+        # 扁平化实体列表
+        flat_entities = []
+        for ent_list in ner_entities.values():
+            flat_entities.extend(ent_list)
+        flat_entities = list(set(flat_entities))  # 去重
+
+        if not flat_entities or len(source_text.strip()) < 5:
+            return {
+                "text_id": text_id,
+                "source_text": source_text,
+                "relation_triplets": []
+            }
+
+        # 构建句法分析信息（用于prompt_builder）
+        syntax_info = analyze_sentence_syntax(source_text)
+
+        # 使用prompt_builder构建提示词
+        prompt = self.prompt_builder.build_relation_prompt(
+            sentence=source_text,
+            entities=flat_entities,
+            syntax_info=syntax_info
+        )
+
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt}
+        ]
+
+        # 调用LLM
+        llm_resp = self._call_llm(messages)
+        triplets = self._parse_triplets(llm_resp)
+
+        # 构建输出
+        relation_triplets = []
+        for triplet in triplets:
+            subject, predicate, obj = triplet
+            # 计算位置（简单查找首次出现位置）
+            subj_start = source_text.find(subject)
+            subj_end = subj_start + len(subject) if subj_start != -1 else -1
+            pred_start = source_text.find(predicate, subj_end)
+            pred_end = pred_start + len(predicate) if pred_start != -1 else -1
+            obj_start = source_text.find(obj, pred_end)
+            obj_end = obj_start + len(obj) if obj_start != -1 else -1
+
+            # 置信度：简单设置为0.95，可扩展为基于LLM的评分
+            confidence = 0.95
+
+            relation_triplets.append({
+                "subject": subject,
+                "predicate": predicate,
+                "object": obj,
+                "confidence": confidence,
+                "position": {
+                    "subject_start": subj_start,
+                    "subject_end": subj_end,
+                    "predicate_start": pred_start,
+                    "predicate_end": pred_end,
+                    "object_start": obj_start,
+                    "object_end": obj_end
+                }
+            })
+
+        return {
+            "text_id": text_id,
+            "source_text": source_text,
+            "relation_triplets": relation_triplets
+        }
+
+    def save_relations(self, relations: Dict[str, Any], output_dir: str = "run_output"):
+        """
+        保存关系抽取结果到文件
+        :param relations: 关系抽取结果字典
+        :param output_dir: 输出目录
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        filename = f"{relations['text_id']}_relation.json"
+        filepath = os.path.join(output_dir, filename)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(relations, f, ensure_ascii=False, indent=2)
+        print(f"关系抽取结果已保存至：{filepath}")
+
+    def validate_relation_format(self, relations: Dict[str, Any]) -> bool:
+        """
+        校验输出格式是否符合规范
+        :param relations: 关系抽取结果字典
+        :return: 是否有效
+        """
+        required_keys = {"text_id", "source_text", "relation_triplets"}
+        if not all(key in relations for key in required_keys):
+            return False
+        if not isinstance(relations["relation_triplets"], list):
+            return False
+        for triplet in relations["relation_triplets"]:
+            required_triplet_keys = {"subject", "predicate", "object", "confidence", "position"}
+            if not all(key in triplet for key in required_triplet_keys):
+                return False
+            if not isinstance(triplet["confidence"], (int, float)) or not (0 <= triplet["confidence"] <= 1):
+                return False
+            pos = triplet["position"]
+            pos_keys = {"subject_start", "subject_end", "predicate_start", "predicate_end", "object_start", "object_end"}
+            if not all(key in pos for key in pos_keys):
+                return False
+        return True
+
+    def _call_llm(self, messages: List[Dict[str, str]], model: Optional[str] = None, max_retries: int = 5) -> str:
+        """
+        调用LLM获取响应
+        :param messages: 消息列表
+        :param model: 模型名称
+        :param max_retries: 最大重试次数
+        :return: LLM响应文本
+        """
+        if not self.llm_client:
+            raise RuntimeError('LLM客户端未初始化')
+
+        model = model or os.getenv('GRAPHRAG_CHAT_MODEL') or 'gpt-4o'
+        attempt = 0
+        while attempt < max_retries:
+            try:
+                response = self.llm_client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.0,
+                    max_tokens=1024,
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                attempt += 1
+                if attempt >= max_retries:
+                    print(f"LLM调用失败：{str(e)[:100]}")
+                    return "[]"
+                time.sleep(1 * (2 ** (attempt - 1)))
+        return "[]"
+
+    def _parse_triplets(self, response: str) -> List[List[str]]:
+        """
+        解析LLM响应为三元组列表
+        :param response: LLM响应文本
+        :return: 三元组列表
+        """
+        # 预处理
+        response = response.strip()
+        response = re.sub(r'^```(json)?|```$', '', response, flags=re.MULTILINE)
+        response = re.sub(r'\n+', '', response)
+
         try:
-            return json.loads(m.group(0))
-        except Exception:
-            pass
-    # 若未匹配到多层数组，尝试提取单层数组（如[实体1, 关系, 实体2]）
-    m2 = re.search(r'\[.*\]', s, re.S)
-    if m2:
-        try:
-            data = json.loads(m2.group(0))
-            # 若提取到的是单个三元组（单层数组），转换为多层数组格式（统一输出结构）
-            if data and not isinstance(data[0], list):
-                return [data]
-            return data
-        except Exception:
-            pass
-    # 所有解析尝试失败，返回空列表
-    return []
+            triplets = json.loads(response)
+        except json.JSONDecodeError:
+            # 正则提取
+            match = re.search(r'\[\s*\[.*\]\s*\]', response, re.S)
+            if match:
+                try:
+                    triplets = json.loads(match.group(0))
+                except:
+                    return []
+            else:
+                return []
+
+        # 校验和去重
+        valid_triplets = []
+        seen = set()
+        for triplet in triplets:
+            if not isinstance(triplet, list) or len(triplet) < 3:
+                continue
+            subj, pred, obj = triplet[0].strip(), triplet[1].strip(), triplet[2].strip()
+            if not subj or not pred or not obj:
+                continue
+            key = (subj.lower(), pred.lower(), obj.lower())
+            if key not in seen:
+                seen.add(key)
+                valid_triplets.append([subj, pred, obj])
+        return valid_triplets
 
 def build_messages(text, entities):
     """
-    构建传给大模型的消息列表：整合原文、已提取实体，明确任务要求
-    :param text: 原始文本块（来自processed_texts.json）
-    :param entities: 已提取的实体字典（来自entities_extracted.json，含5类实体）
-    :return: 格式化后的消息列表（无实体时返回None，跳过后续调用）
+    构建LLM消息列表（通用化，无核心概念绑定）
+    :param text: 原始文本
+    :param entities: 已提取的实体字典
+    :return: 消息列表（无实体时返回None）
     """
-    # 扁平化实体列表：将5类实体的所有值合并为一个列表，便于大模型快速查看
+    # 扁平化实体列表并去重
     flat_entities = []
-    for k, v in entities.items():
-        if isinstance(v, list):  # 确保值是列表类型（避免异常）
-            flat_entities.extend(v)
+    seen_ents = set()
+    for ent_list in entities.values():
+        for ent in ent_list:
+            clean_ent = ent.strip()
+            if clean_ent and clean_ent not in seen_ents:
+                seen_ents.add(clean_ent)
+                flat_entities.append(clean_ent)
     
-    # 过滤掉空的实体列表：无实体时无需调用大模型，直接返回None
+    # 无实体时返回None
     if not flat_entities:
         return None
+    
+    # 构建用户提示词（强调仅提取文本中真实存在的关系）
+    user_prompt = f"""
+请基于以下文本和已识别实体，提取**文本明确提及**的三元组关系：
 
-    # 将扁平化实体列表转换为字符串（如"南沙区, 岭南文化, 推广"）
-    ent_str = ", ".join(flat_entities)
+原文：
+{text}
+
+已识别实体：
+{', '.join(flat_entities)}
+
+输出要求：
+1. 仅输出JSON数组，格式为 [[Head实体, Relation关系, Tail实体], ...]；
+2. 关系必须来自文本，禁止生成无依据的关联；
+3. 严格遵守关系谓词规范，拒绝模糊表述。
+    """
     
-    # 构建用户提示词：明确核心概念、提供原文和实体，强调三元组格式和孤岛处理要求
-    user_prompt = (
-        f"核心概念：【{CORE_CONCEPT}】\n"
-        f"原文：\n{text}\n\n"
-        f"已识别实体：[{ent_str}]\n\n"
-        f"请提取三元组，格式为 [[Head, Relation, Tail]]。\n"
-        f"特别注意：如果实体与【{CORE_CONCEPT}】有隐含关联，请务必显式生成一条包含“{CORE_CONCEPT}”作为头实体或尾实体的三元组，以消除孤岛。"
-    )
-    
-    # 消息列表：system prompt定义规则，user prompt提供具体数据和要求
-    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user_prompt}]
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt}
+    ]
 
 def run(input_json, output_json, model=None):
     """
-    关系抽取核心流程：读取实体数据 → 逐段调用大模型 → 解析三元组 → 后处理（强制连接核心概念）→ 保存输出
-    核心策略：Hub-and-Spoke（以CORE_CONCEPT为中心枢纽，消除实体孤岛）
-    :param input_json: 输入JSON文件路径（来自ner_llm.py的entities_extracted.json）
-    :param output_json: 输出JSON文件路径（关系抽取结果，默认triplets_final.json）
-    :param model: 指定大模型（可选，覆盖默认配置）
+    关系抽取核心流程（使用RelationExtractor类）
+    :param input_json: 输入实体JSON文件路径
+    :param output_json: 输出三元组JSON文件路径
+    :param model: 指定大模型
     """
-    # 检查输入文件是否存在
+    # 检查输入文件
     if not os.path.exists(input_json):
-        print(f"错误：找不到输入文件 {input_json}")
+        print(f"错误：输入文件 {input_json} 不存在")
         return
 
-    # 读取输入文件：加载实体提取结果（每个元素包含id、text、entities）
+    # 读取输入实体数据
     with open(input_json, 'r', encoding='utf-8') as f:
-        items = json.load(f)
+        try:
+            items = json.load(f)
+        except json.JSONDecodeError:
+            print(f"错误：输入文件 {input_json} 不是有效JSON格式")
+            return
 
-    all_triplets = []  # 存储最终的三元组结果
-    
-    # 打印任务信息：明确关系抽取策略（Hub-and-Spoke，围绕核心概念）
-    print(f"开始关系抽取，策略：Hub-and-Spoke (围绕核心概念 {CORE_CONCEPT} 消除实体孤岛)...")
+    # 初始化LLM客户端
+    try:
+        from openai import OpenAI
+        api_key = os.getenv('GRAPHRAG_CHAT_API_KEY') or os.getenv('OPENAI_API_KEY')
+        api_base = os.getenv('GRAPHRAG_API_BASE')
+        llm_client = OpenAI(api_key=api_key, base_url=api_base) if api_base else OpenAI(api_key=api_key)
+    except ImportError:
+        print("错误：未安装openai包，请运行 pip install openai")
+        return
+    except Exception as e:
+        print(f"错误：LLM客户端初始化失败: {e}")
+        return
 
-    # 遍历每个文本块，逐段提取关系（tqdm显示进度条）
-    for it in tqdm(items, desc='关系抽取进度'):
-        text = it.get('text')  # 原始文本块
-        entities = it.get('entities', {})  # 该文本块已提取的实体字典
-        
-        # 如果实体字典中所有类别都是空列表，跳过当前文本块（无实体可抽取关系）
-        if not any(entities.values()):
+    # 初始化组件
+    prompt_builder = PromptBuilder()
+    extractor = RelationExtractor(llm_client, prompt_builder)
+
+    all_results = []
+    print("开始关系抽取（城市规划领域，仅提取文本中真实存在的关系）...")
+
+    # 批量处理每个文本块
+    for item in tqdm(items, desc='关系抽取进度'):
+        text = item.get('text', '').strip()
+        item_id = item.get('id', '')
+        entities = item.get('entities', {})
+
+        # 过滤空文本/无实体的情况
+        if len(text) < 5 or not any(entities.values()):
+            all_results.append({
+                "id": item_id,
+                "text": text,
+                "triplets": []
+            })
             continue
+
+        # 使用RelationExtractor提取关系
+        try:
+            result = extractor.extract_relations(item_id, text, entities)
+            # 转换为旧格式以保持兼容性
+            triplets = []
+            for triplet in result['relation_triplets']:
+                triplets.append([
+                    triplet['subject'],
+                    triplet['predicate'],
+                    triplet['object']
+                ])
+
+            result_item = {
+                "id": item_id,
+                "text": text,
+                "triplets": triplets
+            }
             
-        # 构建传给大模型的消息列表
-        messages = build_messages(text, entities)
-        if messages is None:  # 无实体时跳过
-            continue
+            # 保留实体别名映射（如果存在）
+            if 'entity_aliases' in item:
+                result_item['entity_aliases'] = item['entity_aliases']
+            
+            # 保留其他字段（如entities、syntax等）
+            for key in ['entities', 'syntax']:
+                if key in item:
+                    result_item[key] = item[key]
+            
+            all_results.append(result_item)
+        except Exception as e:
+            print(f"处理文本块 {item_id} 时出错: {e}")
+            all_results.append({
+                "id": item_id,
+                "text": text,
+                "triplets": []
+            })
 
-        # 调用大模型，获取关系抽取响应
-        resp = call_llm(messages, model=model)
-        # 解析响应为三元组列表
-        triplets = extract_json_array(resp)
-        
-        # --- 后处理优化：强制连接孤岛（核心逻辑）---
-        # 目的：确保所有实体都与核心概念{CORE_CONCEPT}有连接，避免图谱中存在孤立节点
-        has_core_link = False  # 标记当前三元组是否已包含与核心概念的连接
-        # 扁平化实体列表：用于后续筛选候选实体
-        flat_entities = []
-        for cat, ent_list in entities.items():
-            flat_entities.extend(ent_list)
-
-        # 检查现有三元组是否包含与核心概念的连接（头实体或尾实体是核心概念）
-        for t in triplets:
-            if len(t) >= 3 and (CORE_CONCEPT in t[0] or CORE_CONCEPT in t[2]):
-                has_core_link = True
-                break
-        
-        # 如果没有找到核心连接，且存在提取到的实体，强制补充一条连接三元组
-        if not has_core_link and flat_entities:
-            # 优先选择“规划概念”或“地点”作为候选实体（与核心概念关联性更强）
-            candidates = entities.get("Concept", []) + entities.get("Location", [])
-            if candidates:  # 若有候选实体
-                # 补充弱连接三元组：[第一个候选实体, "相关于", 核心概念]，确保连通性
-                forced_triplet = [candidates[0], "相关于", CORE_CONCEPT]
-                triplets.append(forced_triplet)
-
-        # 将当前文本块的id、原文、提取的三元组添加到结果列表
-        all_triplets.append({"id": it.get('id'), "text": text, "triplets": triplets})
-
-    # 保存关系抽取结果到JSON文件（ensure_ascii=False保留中文，indent=2格式化输出）
+    # 保存结果
     with open(output_json, 'w', encoding='utf-8') as f:
-        json.dump(all_triplets, f, ensure_ascii=False, indent=2)
-    print(f'关系抽取完成！共处理 {len(all_triplets)} 个文本块，三元组结果已保存至', output_json)
+        json.dump(all_results, f, ensure_ascii=False, indent=2)
+    print(f"关系抽取完成！共处理 {len(all_results)} 个文本块，结果已保存至：{output_json}")
 
 def main():
-    """程序主函数：解析命令行参数，启动关系抽取流程"""
-    # 初始化命令行参数解析器
-    p = argparse.ArgumentParser(description=f"基于大模型的关系抽取工具（核心策略：以{CORE_CONCEPT}为中心消除孤岛）")
-    # 输入文件参数（默认entities_extracted.json，即ner_llm.py的输出）
-    p.add_argument('--input', '-i', default='entities_extracted.json', help='输入实体JSON文件路径')
-    # 输出文件参数（默认triplets_final.json，关系抽取结果）
-    p.add_argument('--output', '-o', default='triplets_final.json', help='输出三元组结果JSON文件路径')
-    # 模型指定参数（可选，如--model gpt-4o-mini）
-    p.add_argument('--model', '-m', default=None, help='指定使用的大模型（如gpt-4o、gpt-3.5-turbo等）')
-    # 解析参数
-    args = p.parse_args()
-    # 启动关系抽取流程
+    """程序主函数（通用化参数解析）"""
+    parser = argparse.ArgumentParser(description='城市规划领域三元组关系抽取工具（仅提取文本中真实存在的关系）')
+    parser.add_argument('--input', '-i', default='entities_extracted.json', help='输入实体JSON文件路径')
+    parser.add_argument('--output', '-o', default='triplets_final.json', help='输出三元组结果JSON文件路径')
+    parser.add_argument('--model', '-m', default=None, help='指定大模型（如gpt-4o、gpt-3.5-turbo）')
+    args = parser.parse_args()
     run(args.input, args.output, model=args.model)
 
-# 程序入口：当脚本被直接运行时，执行main函数
 if __name__ == '__main__':
     main()
+

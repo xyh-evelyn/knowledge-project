@@ -99,7 +99,7 @@ def estimate_tokens(s):
     return max(1, len(s) // 2)
 
 
-def chunk_sentences(sentences, max_tokens=512):
+def chunk_sentences(sentences, max_tokens=256):
     chunks = []
     cur = []
     cur_tokens = 0
@@ -117,7 +117,7 @@ def chunk_sentences(sentences, max_tokens=512):
     return chunks
 
 
-def process_text_file(input_path, output_path, max_tokens=512):
+def process_text_file(input_path, output_path, max_tokens=256):
     # """
     # 处理纯文本文件的完整流程：读取 → 清洗 → 分割 → 分块 → 保存
     # :param input_path: 纯文本文件路径
@@ -138,7 +138,7 @@ def process_text_file(input_path, output_path, max_tokens=512):
     return out
 
 
-def process_pdf(input_path, output_path, max_tokens=512):
+def process_pdf(input_path, output_path, max_tokens=256):
     # """
     # 处理PDF文件的完整流程：提取文本 → 清洗 → 分割 → 分块 → 保存
     # 流程与纯文本处理一致，仅多一步PDF文本提取
@@ -164,7 +164,7 @@ def main():
     p.add_argument('--input', '-i', default=None)
     p.add_argument('--text', '-t', default=None, help='纯文本文件路径')
     p.add_argument('--output', '-o', default='processed_texts.json')
-    p.add_argument('--max-tokens', type=int, default=512)
+    p.add_argument('--max-tokens', type=int, default=256)
     args = p.parse_args()
     if args.text:
         print('Processing text file:', args.text)

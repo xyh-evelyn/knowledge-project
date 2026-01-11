@@ -2,10 +2,52 @@
 from typing import Dict, List, Any
 
 
+class PromptBuilder:
+    """
+    提示词构建器类，用于构建关系抽取的LLM提示词
+    """
+    def __init__(self):
+        pass
+
+    def build_relation_prompt(self, sentence: str, entities: List[str], syntax_info: Dict[str, Any]) -> str:
+        """
+        构建关系抽取提示词
+        :param sentence: 输入句子
+        :param entities: 实体列表
+        :param syntax_info: 句法分析信息
+        :return: 构建的提示词
+        """
+        dep = syntax_info.get('dep') or syntax_info.get('dependency') or ''
+        con = syntax_info.get('con') or syntax_info.get('con_pos') or syntax_info.get('const') or ''
+        
+        prompt = f"""
+请基于以下文本和已识别实体，提取**文本明确提及**的三元组关系：
+
+原文：
+{sentence}
+
+已识别实体：
+{', '.join(entities)}
+
+句法分析信息：
+依存关系：{dep}
+成分分析：{con}
+
+输出要求：
+1. 仅输出JSON数组，格式为 [[Head实体, Relation关系, Tail实体], ...]；
+2. 关系必须来自文本，禁止生成无依据的关联；
+3. 严格遵守关系谓词规范，拒绝模糊表述。
+"""
+        return prompt.strip()
+
+
 def build_core_prompt(sentence: str,
                       para_content: str,
                       syntax_info: Dict[str, Any],
                       core_concepts: List[str]) -> str:
+    """
+    旧版函数，保留兼容性
+    """
     dep = syntax_info.get('dep') or syntax_info.get('dependency') or ''
     con = syntax_info.get('con') or syntax_info.get('con_pos') or syntax_info.get('const') or ''
     if isinstance(core_concepts, (list, tuple)):
