@@ -4,6 +4,11 @@ spacy>=3.4.0
 tqdm>=4.65.0
 neo4j>=5.0.0
 
+# 知识图谱补全（KGC）依赖
+torch>=2.0.0
+torch-geometric>=2.3.0
+numpy>=1.24.0
+
 # 可选依赖（用于PDF处理）
 # PyPDF2>=3.0.0  # 如果需要PDF处理功能，取消注释
 
