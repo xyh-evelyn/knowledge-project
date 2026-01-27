@@ -1,10 +1,17 @@
 import os
 import json
 import time
+import sys
 import argparse
 import re
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 from tqdm import tqdm
+
+# 添加项目根目录到 Python 路径
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.config import ENTITIES_EXTRACTED_PATH, TRIPLETS_FINAL_PATH, ensure_output_dirs
 
 # 尝试导入OpenAI客户端
 try:
@@ -404,12 +411,27 @@ def run(input_json, output_json, model=None):
 
 def main():
     """程序主函数（通用化参数解析）"""
-    parser = argparse.ArgumentParser(description='城市规划领域三元组关系抽取工具（仅提取文本中真实存在的关系）')
-    parser.add_argument('--input', '-i', default='entities_extracted.json', help='输入实体JSON文件路径')
-    parser.add_argument('--output', '-o', default='triplets_final.json', help='输出三元组结果JSON文件路径')
-    parser.add_argument('--model', '-m', default=None, help='指定大模型（如gpt-4o、gpt-3.5-turbo）')
+    parser = argparse.ArgumentParser(description='城市规划领域三元组关系抽取工具（LLM 驱动）')
+    parser.add_argument('--input', '-i', default=None, help='输入实体 JSON 文件路径（可选，默认使用配置）')
+    parser.add_argument('--output', '-o', default=None, help='输出三元组 JSON 文件路径（可选，默认使用配置）')
+    parser.add_argument('--model', '-m', default=None, help='指定大模型（如 gpt-4o、gpt-3.5-turbo）')
     args = parser.parse_args()
-    run(args.input, args.output, model=args.model)
+    
+    # 确保输出目录存在
+    ensure_output_dirs()
+    
+    # 确定输入输出路径
+    input_path = args.input or str(ENTITIES_EXTRACTED_PATH)
+    output_path = args.output or str(TRIPLETS_FINAL_PATH)
+    
+    if not os.path.exists(input_path):
+        print(f"❌ 错误：输入文件不存在 {input_path}")
+        sys.exit(1)
+    
+    print(f"📥 输入文件: {input_path}")
+    print(f"📤 输出文件: {output_path}")
+    
+    run(input_path, output_path, model=args.model)
 
 if __name__ == '__main__':
     main()

@@ -15,9 +15,17 @@
 """
 import json
 import re
-from collections import defaultdict
+import sys
+import os
+import argparse
 from pathlib import Path
+from collections import defaultdict
 from typing import Dict, List, Tuple, Set, Optional
+
+# 添加项目根目录到 Python 路径
+sys.path.insert(0, str(Path(__file__).parent))
+
+from src.config import TRIPLETS_CLEANED_PATH, TRIPLETS_COMPLETED_PATH, ensure_output_dirs
 
 
 def find_triplet_source_sentence(triplet: List[str], text: str) -> Optional[str]:
@@ -400,26 +408,40 @@ def complete_triplet_links(
 # ==================== 主程序入口 ====================
 
 if __name__ == '__main__':
-    import argparse
-    
     parser = argparse.ArgumentParser(description='三元组关联补全工具（解决孤岛三元组问题）')
-    parser.add_argument('--input', '-i', default='triplets_cleaned.json',
-                       help='输入清洗后的三元组JSON文件路径（默认: triplets_cleaned.json）')
-    parser.add_argument('--output', '-o', default='triplets_completed.json',
-                       help='输出补全后的三元组JSON文件路径（默认: triplets_completed.json）')
-    parser.add_argument('--original', '-r', default='triplets_cleaned_original.json',
-                       help='原始数据备份路径（默认: triplets_cleaned_original.json）')
+    parser.add_argument('--input', '-i', default=None,
+                       help='输入清洗后的三元组 JSON 文件路径（可选，默认使用配置）')
+    parser.add_argument('--output', '-o', default=None,
+                       help='输出补全后的三元组 JSON 文件路径（可选，默认使用配置）')
+    parser.add_argument('--original', '-r', default=None,
+                       help='原始数据备份路径（可选，默认使用配置）')
     
     args = parser.parse_args()
     
+    # 确保输出目录存在
+    ensure_output_dirs()
+    
+    # 确定输入输出路径
+    input_path = args.input or str(TRIPLETS_CLEANED_PATH)
+    output_path = args.output or str(TRIPLETS_COMPLETED_PATH)
+    original_path = args.original or str(TRIPLETS_COMPLETED_PATH.parent / "triplets_cleaned_original.json")
+    
+    if not os.path.exists(input_path):
+        print(f"❌ 错误：输入文件不存在 {input_path}")
+        sys.exit(1)
+    
+    print(f"📥 输入文件: {input_path}")
+    print(f"📤 输出文件: {output_path}")
+    print(f"📋 原始数据备份: {original_path}")
+    
     try:
         stats = complete_triplet_links(
-            input_path=args.input,
-            output_path=args.output,
-            original_path=args.original
+            input_path=input_path,
+            output_path=output_path,
+            original_path=original_path
         )
     except Exception as e:
-        print(f'错误: {e}')
+        print(f'❌ 错误: {e}')
         import traceback
         traceback.print_exc()
-        exit(1)
+        sys.exit(1)

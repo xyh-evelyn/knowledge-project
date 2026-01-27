@@ -21,9 +21,17 @@
 """
 import json
 import re
-from collections import Counter, defaultdict
+import sys
+import os
+import argparse
 from pathlib import Path
+from collections import Counter, defaultdict
 from typing import Dict, List, Tuple, Set
+
+# 添加项目根目录到 Python 路径
+sys.path.insert(0, str(Path(__file__).parent))
+
+from src.config import TRIPLETS_FINAL_PATH, TRIPLETS_CLEANED_PATH, RELATION_MERGE_MAP_PATH, ensure_output_dirs
 
 
 # ==================== 配置常量 ====================
@@ -446,26 +454,40 @@ def clean_triplets(
 # ==================== 主程序入口 ====================
 
 if __name__ == '__main__':
-    import argparse
-    
     parser = argparse.ArgumentParser(description='三元组清洗工具（优化版）')
-    parser.add_argument('--input', '-i', default='triplets_final.json', 
-                       help='输入JSON文件路径（默认: triplets_final.json）')
-    parser.add_argument('--output', '-o', default='triplets_cleaned.json',
-                       help='输出JSON文件路径（默认: triplets_cleaned.json）')
-    parser.add_argument('--merge-map', '-m', default='relation_merge_map.json',
-                       help='关系合并对照表输出路径（默认: relation_merge_map.json）')
+    parser.add_argument('--input', '-i', default=None, 
+                       help='输入 JSON 文件路径（可选，默认使用配置）')
+    parser.add_argument('--output', '-o', default=None,
+                       help='输出 JSON 文件路径（可选，默认使用配置）')
+    parser.add_argument('--merge-map', '-m', default=None,
+                       help='关系合并对照表输出路径（可选，默认使用配置）')
     
     args = parser.parse_args()
     
+    # 确保输出目录存在
+    ensure_output_dirs()
+    
+    # 确定输入输出路径
+    input_path = args.input or str(TRIPLETS_FINAL_PATH)
+    output_path = args.output or str(TRIPLETS_CLEANED_PATH)
+    merge_map_path = args.merge_map or str(RELATION_MERGE_MAP_PATH)
+    
+    if not os.path.exists(input_path):
+        print(f"❌ 错误：输入文件不存在 {input_path}")
+        sys.exit(1)
+    
+    print(f"📥 输入文件: {input_path}")
+    print(f"📤 输出文件: {output_path}")
+    print(f"📋 关系合并表: {merge_map_path}")
+    
     try:
         stats = clean_triplets(
-            input_path=args.input,
-            output_path=args.output,
-            merge_map_path=args.merge_map
+            input_path=input_path,
+            output_path=output_path,
+            merge_map_path=merge_map_path
         )
     except Exception as e:
-        print(f'错误: {e}')
+        print(f'❌ 错误: {e}')
         import traceback
         traceback.print_exc()
-        exit(1)
+        sys.exit(1)

@@ -1,9 +1,16 @@
 import os
 import json
 import time
+import sys
 import argparse
 import re
+from pathlib import Path
 from tqdm import tqdm
+
+# 添加项目根目录到 Python 路径
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.config import PROCESSED_TEXTS_PATH, ENTITIES_EXTRACTED_PATH, ensure_output_dirs
 
 try:
     from openai import OpenAI
@@ -425,12 +432,27 @@ def run(input_json, output_json, model=None):
     print(f"实体抽取完成！结果已保存至：{output_json}")
 
 def main():
-    parser = argparse.ArgumentParser(description='城市规划与建筑领域实体提取工具（无核心概念绑定）')
-    parser.add_argument('--input', '-i', default='processed_texts.json', help='输入JSON文件路径')
-    parser.add_argument('--output', '-o', default='entities_extracted.json', help='输出JSON文件路径')
-    parser.add_argument('--model', '-m', default=None, help='指定大模型（如gpt-4o、gpt-3.5-turbo）')
+    parser = argparse.ArgumentParser(description='城市规划与建筑领域实体提取工具（LLM 驱动）')
+    parser.add_argument('--input', '-i', default=None, help='输入 JSON 文件路径（可选，默认使用配置）')
+    parser.add_argument('--output', '-o', default=None, help='输出 JSON 文件路径（可选，默认使用配置）')
+    parser.add_argument('--model', '-m', default=None, help='指定大模型（如 gpt-4o、gpt-3.5-turbo）')
     args = parser.parse_args()
-    run(args.input, args.output, model=args.model)
+    
+    # 确保输出目录存在
+    ensure_output_dirs()
+    
+    # 确定输入输出路径
+    input_path = args.input or str(PROCESSED_TEXTS_PATH)
+    output_path = args.output or str(ENTITIES_EXTRACTED_PATH)
+    
+    if not os.path.exists(input_path):
+        print(f"❌ 错误：输入文件不存在 {input_path}")
+        sys.exit(1)
+    
+    print(f"📥 输入文件: {input_path}")
+    print(f"📤 输出文件: {output_path}")
+    
+    run(input_path, output_path, model=args.model)
 
 if __name__ == '__main__':
     main()

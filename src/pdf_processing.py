@@ -1,21 +1,28 @@
 """PDF 或纯文本 -> 清洗文本 -> 分块（支持 token 估算）
 
 用法示例:
-    python src/pdf_processing.py --input plan.pdf --output processed_texts.json
-    python src/pdf_processing.py --text input/text1.txt --output processed_texts.json
+    python -m src.pdf_processing --text input/text1.txt
+    python -m src.pdf_processing --input plan.pdf
 
-依赖: pdfplumber, tiktoken (可选), tqdm
+依赖: pdfplumber, tiktoken (可选)
 """
 import argparse
 import json
 import re
 import os
+import sys
 import pdfplumber
+from pathlib import Path
+
+# 添加项目根目录到 Python 路径
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
     import tiktoken
 except Exception:
     tiktoken = None
+
+from src.config import PROCESSED_TEXTS_PATH, ensure_output_dirs
 
 
 def extract_text_from_pdf(path):
@@ -160,21 +167,37 @@ def process_pdf(input_path, output_path, max_tokens=256):
 
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument('--input', '-i', default=None)
-    p.add_argument('--text', '-t', default=None, help='纯文本文件路径')
-    p.add_argument('--output', '-o', default='processed_texts.json')
-    p.add_argument('--max-tokens', type=int, default=256)
+    p = argparse.ArgumentParser(description="文本预处理：PDF/纯文本 → JSON 分块")
+    p.add_argument('--input', '-i', default=None, help='输入 PDF 文件路径')
+    p.add_argument('--text', '-t', default=None, help='输入纯文本文件路径')
+    p.add_argument('--output', '-o', default=None, help='输出 JSON 路径（可选，默认自动生成）')
+    p.add_argument('--max-tokens', type=int, default=256, help='每个文本块的最大 token 数')
     args = p.parse_args()
+    
+    # 确保输出目录存在
+    ensure_output_dirs()
+    
+    # 确定输出路径
+    output_path = args.output or str(PROCESSED_TEXTS_PATH)
+    
     if args.text:
-        print('Processing text file:', args.text)
-        items = process_text_file(args.text, args.output, max_tokens=args.max_tokens)
+        print(f"📄 处理纯文本文件: {args.text}")
+        if not os.path.exists(args.text):
+            print(f"❌ 错误：文件不存在 {args.text}")
+            sys.exit(1)
+        items = process_text_file(args.text, output_path, max_tokens=args.max_tokens)
     elif args.input:
-        print('Processing PDF:', args.input)
-        items = process_pdf(args.input, args.output, max_tokens=args.max_tokens)
+        print(f"📄 处理 PDF 文件: {args.input}")
+        if not os.path.exists(args.input):
+            print(f"❌ 错误：文件不存在 {args.input}")
+            sys.exit(1)
+        items = process_pdf(args.input, output_path, max_tokens=args.max_tokens)
     else:
-        raise SystemExit('请提供 --input (PDF) 或 --text (纯文本文件) 参数')
-    print(f'Saved {len(items)} chunks to', args.output)
+        print("❌ 错误：请提供 --input (PDF) 或 --text (纯文本文件) 参数")
+        sys.exit(1)
+    
+    print(f"✓ 成功处理 {len(items)} 个文本块")
+    print(f"✓ 输出文件: {output_path}")
 
 
 if __name__ == '__main__':

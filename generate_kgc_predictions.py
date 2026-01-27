@@ -9,13 +9,15 @@
 
 import json
 import sys
+import os
 import argparse
 from pathlib import Path
 from typing import List, Tuple
 
-# 添加src目录到路径
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+# 添加项目根目录到路径
+sys.path.insert(0, str(Path(__file__).parent))
 
+from src.config import TRIPLETS_COMPLETED_PATH, KGC_PREDICTIONS_PATH, ensure_output_dirs
 from src.kgc_module import KGCModule, load_json_data
 
 
@@ -124,12 +126,12 @@ def load_queries_from_file(queries_file: str) -> List[Tuple[str, str]]:
 
 def main():
     parser = argparse.ArgumentParser(description="从KGC模块生成预测结果")
-    parser.add_argument("--input", "-i", default="triplets_completed.json",
-                       help="输入JSON文件路径（默认: triplets_completed.json）")
+    parser.add_argument("--input", "-i", default=None,
+                       help="输入JSON文件路径（可选，默认使用配置）")
     parser.add_argument("--queries", "-q", required=True,
                        help="查询文件路径（JSON或文本格式）")
-    parser.add_argument("--output", "-o", default="kgc_predictions.json",
-                       help="输出预测结果文件路径（默认: kgc_predictions.json）")
+    parser.add_argument("--output", "-o", default=None,
+                       help="输出预测结果文件路径（可选，默认使用配置）")
     parser.add_argument("--embedding-dim", type=int, default=100,
                        help="嵌入维度（默认: 100）")
     parser.add_argument("--use-gcn", action="store_true",
@@ -149,26 +151,37 @@ def main():
     
     args = parser.parse_args()
     
+    # 确保输出目录存在
+    ensure_output_dirs()
+    
+    # 确定输入输出路径
+    input_path = args.input or str(TRIPLETS_COMPLETED_PATH)
+    output_path = args.output or str(KGC_PREDICTIONS_PATH)
+    
+    if not os.path.exists(input_path):
+        print(f"❌ 错误：输入文件不存在 {input_path}")
+        sys.exit(1)
+    
     # 1. 加载数据
-    print(f"加载数据: {args.input}")
-    data = load_json_data(args.input)
-    print(f"加载了 {len(data)} 条数据")
+    print(f"📥 加载数据: {input_path}")
+    data = load_json_data(input_path)
+    print(f"✓ 加载了 {len(data)} 条数据")
     
     # 2. 初始化KGC模块
-    print(f"\n初始化KGC模块 (embedding_dim={args.embedding_dim}, use_gcn={args.use_gcn})...")
+    print(f"\n🤖 初始化KGC模块 (embedding_dim={args.embedding_dim}, use_gcn={args.use_gcn})...")
     kgc = KGCModule(data, embedding_dim=args.embedding_dim, use_gcn=args.use_gcn)
     
     # 3. 训练模型（如果需要）
     if not args.skip_training:
-        print(f"\n训练模型 (epochs={args.epochs}, batch_size={args.batch_size}, lr={args.learning_rate})...")
+        print(f"\n🎓 训练模型 (epochs={args.epochs}, batch_size={args.batch_size}, lr={args.learning_rate})...")
         kgc.train(epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate)
     else:
-        print("\n跳过训练（使用已训练的模型）")
+        print("\n⏭️  跳过训练（使用已训练的模型）")
     
     # 4. 加载查询
-    print(f"\n加载查询: {args.queries}")
+    print(f"\n📋 加载查询: {args.queries}")
     queries = load_queries_from_file(args.queries)
-    print(f"加载了 {len(queries)} 个查询")
+    print(f"✓ 加载了 {len(queries)} 个查询")
     
     # 5. 生成预测
     predictions = generate_predictions_from_queries(
@@ -178,11 +191,12 @@ def main():
     )
     
     # 6. 保存预测结果
-    print(f"\n保存预测结果到: {args.output}")
-    with open(args.output, 'w', encoding='utf-8') as f:
+    print(f"\n💾 保存预测结果到: {output_path}")
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(predictions, f, ensure_ascii=False, indent=2)
     
-    print(f"\n完成！共生成 {len(predictions)} 条预测结果")
+    print(f"\n✓ 完成！共生成 {len(predictions)} 条预测结果")
 
 
 if __name__ == "__main__":
